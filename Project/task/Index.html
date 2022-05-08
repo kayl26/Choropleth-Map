@@ -1,0 +1,777 @@
+<!doctype html>
+<html>
+  <head>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/4.2.8/d3.min.js" type="text/JavaScript"></script>
+     <script src="https://d3js.org/d3-geo-projection.v1.min.js"></script>
+     <script src="colorbrewer.js"></script>
+    
+    <style>
+       select {
+        position: relative;
+        left: 280px;
+        top: 0px;        
+      }
+      path.countries {
+        stroke-width: 1;
+        stroke: #75739F;
+        fill: #5EAFC6;
+      }
+      circle.south {
+        stroke-width: 1;
+        stroke: #4F442B;
+        fill: #FCBC34;
+      }
+       circle.north {
+        stroke-width: 1;
+        stroke: #4F442B;
+        fill: #FCBC34;
+      }
+      circle.centroid {
+        fill: #75739F;
+        pointer-events: none;
+      }
+      rect.bbox {
+        fill: none;
+        stroke-dasharray: 5 5;
+        stroke: #75739F;
+        stroke-width: 2;
+        pointer-events: none;
+      }
+     
+    </style>
+  </head>
+  <body>
+  
+      <div id="controls"></div> 
+      <div id="viz">
+        <svg id="map" style="width:600px;height:600px;">
+          <rect id="map1" width="100%" height="100%" fill="#E1EDF5" />
+        </svg>
+
+        <svg id="details" style="width:600px;height:600px;" >
+          <rect id="details1" width="100%" height="100%" fill="white" /> 
+        </svg>
+      </div>
+      <button id="North">North America</button>
+      <button id="South">South America</button>
+      <button id="Americas">North and South America</button>
+         <select id="selectButton"></select>           
+    <script>
+
+
+    
+      var northCovid = [];
+      var southCovid = [];
+      var countryMap = [];
+      var combinedCovid = [];
+
+
+      var PromiseWrapper = (xhr, d) => new Promise(resolve => xhr(d, (p) => resolve(p)));
+
+      Promise
+        .all([
+          PromiseWrapper(d3.json, "na_and_sa.json"),
+          PromiseWrapper(d3.csv, "south.csv"),
+          PromiseWrapper(d3.csv, "north.csv")
+        ])
+       
+        .then(resolve => {
+          setData(resolve[0], resolve[1], resolve[2]);
+        });
+
+
+       function getCountryData(name) {
+          return combinedCovid.find(d => name == d.Country);
+        }
+
+
+       function getChange(country){
+        var found = getCountryData(country.properties.name_long)
+         if(found != undefined){
+            return (+found.Weekly_Case_Change)
+         }
+         else return 0;
+       }
+
+       function createDropDown(combinedCovid) {
+         var countryList = [];
+         combinedCovid.forEach( function(row) {
+       // Loop through all of the columns, and push country name
+        Object.keys(row).forEach( function(colname) {
+            if(colname != "Country") {
+            return
+            }
+            countryList.push({"Country": row[colname] });
+            });
+        });
+        
+        countryList.sort(function (a, b) {return d3.ascending(a.Country, b.Country)});
+  
+
+       d3.select("#selectButton")
+          .selectAll('myOptions')
+          .data(countryList)
+          .enter()
+          .append('option')
+          .text(function (d) { return d.Country; }) // text showed in the menu
+          .attr("value", function (d) { return d.Country; }) 
+          // corresponding value returned by the button
+
+      }
+
+     
+      //***********************************************************************************************************
+      //Create maps
+
+      function setData(countries, south, north) {
+        
+      northCovid = north;
+      southCovid = south;
+      countryMap = countries.features;
+      combinedCovid = north.concat(south);
+  
+    
+       
+     combinedCovid.sort(function (a, b) {return d3.descending(+a.Cases_last7perM, +b.Cases_last7perM)});
+     northCovid.sort(function (a, b) {return d3.descending(+a.Cases_last7perM, +b.Cases_last7perM)});
+     southCovid.sort(function (a, b) {return d3.descending(+a.Cases_last7perM, +b.Cases_last7perM)});
+     createDropDown(combinedCovid);
+
+    var combinedProj = d3.geoMercator()  
+          .scale(190)
+          .translate([610, 375]);
+
+    var northProj = d3.geoMercator()
+      .scale(275)
+      .translate([850, 600]);
+
+    var southProj = d3.geoMercator()  
+       .scale(355)
+       .translate([680, 150]);
+
+      document.getElementById("North").onclick = function(){setButton(countryMap, northCovid, northProj)}; 
+      document.getElementById("South").onclick = function(){setButton(countryMap, southCovid, southProj)}; 
+      document.getElementById("Americas").onclick = function(){setButton(countryMap, combinedCovid, combinedProj)}; 
+      
+       
+      // When the button is changed, run the update function
+     d3.select("#selectButton").on("change", function() {
+        var selectedOption = d3.select(this).property("value");
+        // run the updateChart function with this selected option
+        newData   = combinedCovid.filter(p => p.Country == selectedOption);
+        d3.select("#details").selectAll("#dashboard").remove();
+
+        createDashboard(newData); //default
+       
+    })
+    createMap(countryMap, combinedCovid, combinedProj);//default
+    createSummary(combinedCovid); //default
+    createDashboard(combinedCovid.filter(p => p.Country == "Canada")); //default
+
+
+    }
+
+ //***************************************************************************************************************
+
+  function setButton(countryMap, data, projection){
+
+    d3.select("#map").selectAll("#summary").remove();
+    d3.select("#map").selectAll("path.countries").remove();
+    
+    createMap(countryMap, data, projection) //based on button selected
+    createSummary(data); //based on button selected
+
+  }
+
+
+//***************************************************************************************************************
+
+    
+     function createMap(countries, finalData, projection) {
+
+        var geoPath = d3.geoPath().projection(projection);
+        var countryColor = d3.scaleQuantize()
+          .domain([-100,100]).range(colorbrewer.RdYlGn[10]);
+        
+        //draw the countries
+          d3.select("#map")
+          .selectAll("path")
+          .data(countries)
+          .enter()
+          .append("path")
+            .attr("d", geoPath)
+            .attr("class", "countries")
+            .style("fill", d => (getChange(d) > 0 ? (countryColor(-getChange(d))): (countryColor(-getChange(d)))))
+            .style("stroke", d => d3.rgb((getChange(d) > 0 ? d3.rgb(countryColor(getChange(d))): d3.rgb(countryColor(getChange(d))))).darker());
+            
+
+
+          //Add a title
+          d3.select("#map")
+          .append("text")
+          .attr("x", 15)
+          .attr("y", 20)
+          .text("COVID Data for Week Ending :")
+          .style("font-size", "16px");
+
+           d3.select("#map")
+          .append("text")
+          .attr("x", 15)
+          .attr("y", 40)
+          .text("March 20, 2022")
+          .style("font-size", "16px");
+
+
+         }
+
+      //*********************************************************************************************************************************
+      // Add Summaries to map
+
+      function createSummary(finalData) {
+
+      // draw rectangle to contain text
+       d3.select("#map")
+         .append("g")
+         .attr("transform", "translate(20,275)")
+         .attr("id", "summary")
+         .append("rect")
+          .attr("width", 180)
+          .attr("height", 280)
+          .style("stroke", "black")
+          .style("fill", "#F5EDE1")
+          .style("opacity", 0.2);
+
+      // Add text
+        d3.select("#summary")
+        .append("text")
+          .attr("x", 25)
+          .attr("y", 10)
+            .text("Summary Data for ")
+            .attr("font-size", "14px")
+            .attr("fill", "black"); 
+
+        d3.select("#summary")
+        .append("text")
+          .attr("x",25)
+          .attr("y", 25)
+            .text((finalData==northCovid ? "North America" : (finalData==southCovid ? "South America" : "North & South America")))
+            .attr("font-size", "14px")
+            .attr("fill", "black")
+            .style("text-decoration", "underline");
+
+
+        //then the following summary totals will be performed only on finalData
+        // Get summary totals  
+       var smallest = finalData.slice(-5);
+       var largest = finalData.slice(0,5);
+       var final_ccases = d3.sum(finalData, d=> +d.Cases_last7)
+       var final_pcases = d3.sum(finalData, d=> +d.Cases_prec7)
+       var final_cdeaths = d3.sum(finalData, d=> +d.Deaths_last7)
+       var final_pdeaths = d3.sum(finalData, d=> +d.Deaths_prec7)
+
+        d3.select("#summary")       
+       .append("text")
+          .attr("x", 5)
+          .attr("y",43)
+            .text("Current Week's Cases: " + " " + d3.format(",d")(final_ccases))
+            .attr("font-size", "12px")
+            .attr("fill", "black"); 
+
+       d3.select("#summary")
+        .append("text")
+          .attr("x", 5)
+            .attr("y",56)
+            .text("Prior Week's Cases: " + " " + d3.format(",d")(final_pcases))
+            .attr("font-size", "12px")
+            .attr("fill", "black"); 
+      
+        d3.select("#summary")
+        .append("text")
+          .attr("x",5)
+          .attr("y",73)
+            .text("Current Week's Deaths: "+ " " + d3.format(",d")(final_cdeaths))
+            .attr("font-size", "12px")
+            .attr("fill", "black"); 
+         
+        d3.select("#summary")
+        .append("text")
+          .attr("x", 5)
+          .attr("y",86)
+            .text("Prior Week's Deaths: "+ " " + d3.format(",d")(final_pdeaths))
+            .attr("font-size", "12px")
+            .attr("fill", "black"); 
+          
+         d3.select("#summary")
+          .append("text")
+            .attr("x", 5)
+            .attr("y",103)
+            .text("Highest Cases per M pop: ")
+            .attr("font-size", "12px")
+            .attr("fill", "black"); 
+
+        d3.select("#summary")
+          .append("g")
+          .attr("transform", "translate(10,116)")
+          .selectAll("g")
+          .data(largest)
+          .enter()
+          .append("text")
+            .attr("y", function(d,i){return (11*i)})
+            .text(d => (d.Country + " = " + d3.format(",d")(d.Cases_last7perM)))
+            .attr("font-size", "11px")
+            .attr("font-style", "italic")
+            .attr("fill", "black"); 
+
+        d3.select("#summary")
+          .append("text")
+            .attr("x", 5)
+            .attr("y",173)
+            .text("Lowest Cases per M pop: ")
+            .attr("font-size", "12px")
+            .attr("fill", "black");
+
+          d3.select("#summary")
+          .append("g")
+          .attr("transform", "translate(10,186)")
+          .selectAll("g")
+          .data(smallest)
+          .enter()
+          .append("text")
+            .attr("y", function(d,i){return (11*i)})
+            .text(d => (d.Country + " = " + d3.format(",d")(d.Cases_last7perM)))
+            .attr("font-size", "11px")
+            .attr("font-style", "italic")
+            .attr("fill", "black"); 
+
+
+          //Add legend to svg
+           var countryColor = d3.scaleQuantize()
+          .domain([-100,100]).range(colorbrewer.RdYlGn[10]);
+        
+          // append a linearGradient element to the defs and give it a unique id
+          var linearGradient = d3.select("#summary").append('linearGradient')
+            .attr('id', 'linear-gradient');
+
+          linearGradient
+          .attr("x1", "0%")
+          .attr("y1", "0%")
+          .attr("x2", "100%")
+          .attr("y2", "0%");
+
+        // append multiple color stops by using D3's data/enter step
+         linearGradient.selectAll("stop")
+          .data([
+            {offset: "0%", color: "#a50026"},
+            {offset: "20%", color: "#f46d43"},
+            {offset: "40%", color: "#fee08b"},
+            {offset: "60%", color: "#d9ef8b"},
+            {offset: "80%", color: "#66bd63"},
+            {offset: "100%", color: "#006837"}
+          ])
+          .enter().append("stop")
+          .attr("offset", function(d) { 
+            return d.offset; 
+          })
+          .attr("stop-color", function(d) { 
+            return d.color; 
+          });
+                 
+    
+        d3.select("#summary").append("text")
+          .attr("class", "legendTitle")
+          .attr("x", 5)
+          .attr("y", 245)
+          .text("Weekly Case Change")
+          .attr("font-size", "12px");
+
+        // draw the rectangle and fill with gradient
+        d3.select("#summary")
+        .append("rect")
+          .attr("x", 5)
+          .attr("y", 248)
+          .attr("width", 100)
+          .attr("height", 15)
+          .style("fill", "url(#linear-gradient)");
+
+        d3.select("#summary").append("text")
+          .attr("x", 5)
+          .attr("y", 272)
+          .text("Inc" +"......................"+"Dec")
+          .attr("font-size", "12px");
+
+      }
+
+        //**********************************************************************************            
+      function createDashboard(combinedCovid) { 
+                  
+      var chartData = combinedCovid;
+
+      //convert to long for selected country
+      var long_data = [];
+      chartData.forEach( function(row) {
+      // Loop through all of the columns, and for each column
+      // make a new row
+      Object.keys(row).forEach( function(colname) {
+        if(colname == "Country") {
+        return
+        }
+        long_data.push({"Category": colname, "Value": +row[colname], });
+        });
+      });
+
+      var margin = {top: 45,
+            right: 15,
+            bottom: 20,
+            left: 20};
+
+
+      var width = 500 - margin.left - margin.right,
+          height = 500 - margin.top - margin.bottom;
+
+
+      var svg = d3.select("#details")
+            .attr("width", width + margin.left + margin.right)
+            .attr("height", height + margin.top + margin.bottom);
+
+        d3.select("#details")
+            .append("g")
+            .attr("transform", "translate(" + 0 + "," + margin.top + ")")
+            .attr("id", "dashboard");
+
+//***********************************************************************************
+//separate svg into 4 sections
+
+    d3.select("#dashboard")
+        .append("line")
+        .attr("x1", 230)
+         .attr("y1", 50)
+         .attr("x2", 230)
+         .attr("y2", 450)
+        .style("stroke", "gray")
+        .style("stroke-width", "2px")
+
+    d3.select("#dashboard")
+        .append("line")
+        .attr("x1", 20)
+         .attr("y1", 260)
+         .attr("x2", 450)
+         .attr("y2", 260)
+        .style("stroke", "gray")
+        .style("stroke-width", "2px")
+
+    d3.select("#dashboard")
+        .append("text")
+        .attr("x", 100)
+         .attr("y", 25)
+         .text("COVID Data at Mar 20, 2022")
+          .attr("font-size", "24px")
+           .attr("font-weight",400)
+          .attr("fill", "black"); 
+
+//***************************************************************************
+// Create 2nd quadrant
+  
+    d3.select("#dashboard")
+     .append("g")
+     .attr("transform", "translate(240,75)")
+     .attr("id", "change")
+
+    d3.select("#change")
+     .append("rect")
+      .attr("width", 200)
+      .attr("height", 150)
+      .style("stroke", "black")
+      .style("fill", "lightgreen")
+      .style("opacity", 0.2);
+     
+    d3.select("#change")
+      .append("text")
+      .attr("x", 25)
+      .attr("y", 25)
+      .text("Weekly Changes")
+        .attr("font-size", "18px")
+        .style("text-decoration", "underline") 
+        .attr("font-style", "italic")
+        .attr("font-weight",400)
+        .attr("fill", "blue"); 
+
+     var caseChange = d3.sum(chartData, d=> +d.Weekly_Case_Change)
+     var deathChange = d3.sum(chartData, d=> +d.Weekly_Death_Change)
+
+    d3.select("#change")
+      .append("text")
+      .attr("x", 12)
+      .attr("y", 60)
+      .text("COVID Cases : " + " " + 
+        (caseChange>0 ? "+" : "") + (caseChange) + "%")
+        .attr("font-size", "18px")
+        .attr("fill",  (caseChange>0 ? "red" : (caseChange<0 ? "green" : "black"))); 
+
+    d3.select("#change")
+      .append("text")
+      .attr("x", 12)
+      .attr("y", 100)
+      .text("COVID Deaths : " + " " + 
+        (deathChange>0 ? "+" : "") + (deathChange) + "%")
+        .attr("font-size", "18px")
+        .attr("fill", (deathChange>0 ? "red" : (deathChange<0 ? "green" : "black")));  
+
+    //***************************************************************************************
+    //create 3rd quadrant
+
+     d3.select("#dashboard")
+     .append("g")
+     .attr("transform", "translate(30,280)")
+     .attr("id", "pop");
+
+     d3.select("#pop")
+     .append("rect")
+      .attr("width", 190)
+      .attr("height", 150)
+      .style("stroke", "black")
+      .style("fill", "lightblue")
+      .style("opacity", 0.2);
+     
+     var pop = d3.sum(chartData, d=> +d.Population)
+     var caseperM = d3.sum(chartData, d=> +d.Cases_last7perM)
+     var deathperM = d3.sum(chartData, d=> +d.Deaths_last7perM)
+
+      d3.select("#pop")
+      .append("text")
+      .attr("x", 30)
+      .attr("y", 25)
+      .text("Population Data")
+        .attr("font-size", "20px")
+        .style("text-decoration", "underline") 
+        .attr("font-style", "italic")
+         .attr("font-weight",400)
+        .attr("fill", "blue"); 
+     
+     d3.select("#pop")
+      .append("text")
+      .attr("x", 25)
+      .attr("y", 55)
+      .text("Total : " + d3.format(",d")(pop))
+        .attr("font-size", "18px")
+        .attr("fill", "black");  
+
+    d3.select("#pop")
+      .append("text")
+      .attr("x", 25)
+      .attr("y", 90)
+      .text("Cases per M : " + d3.format(",d")(caseperM))
+        .attr("font-size", "18px")
+        .attr("fill", "black"); 
+
+     d3.select("#pop")
+      .append("text")
+      .attr("x", 25)
+      .attr("y", 110)
+      .text("Deaths per M : " + d3.format("")(deathperM))
+        .attr("font-size", "18px")
+        .attr("fill", "black"); 
+
+
+    //*********************************************************************************
+    //create 1st quadrant
+ 
+     d3.select("#dashboard")
+     .append("g")
+      .attr("transform", "translate(0,85)")
+      .attr("id", "cases");
+
+     d3.select("#cases")
+     .append("text")
+      .attr("x", 12)
+      .attr("y",15)
+      .text("Cases For Week Ending:")
+      .attr("font-size", "20px")
+        .style("text-decoration", "underline") 
+        .attr("font-style", "italic")
+        .attr("font-weight",400)
+        .attr("fill", "blue"); 
+
+    //create chart for cases only  
+    var caseData = long_data.filter(p => p.Category=="Cases_last7" || p.Category=="Cases_prec7");
+   
+    var xMax = d3.max(caseData, d => d.Value);
+    var xScale = d3.scaleLinear().domain([0,xMax]).range([0,150]);
+    var yScale = d3.scaleBand()
+          .domain(caseData.map(function(d) {return d.Category;}))
+          .range([0, 100])
+          .padding(0.25); //spaces between bars
+      
+    //create rectangles
+      d3.select("#cases")
+        .selectAll("rect")
+        .data(caseData)
+        .enter()
+        .append("rect")
+          .attr("height", 20)
+          .attr("width", d => xScale(d.Value))
+          .attr("y", d=> yScale(d.Category) + 30)
+          .attr("x", 50)
+          .attr("opacity", 0.4)
+          .style("fill", "#00D100")
+          .style("stroke", "#9A8B7A")
+          .style("stroke-width", "1px");
+
+       valueData =  caseData.filter(p => p.Category=="Cases_last7")
+        value1 = d3.max(valueData, d=>d.Value)
+              
+      d3.select("#cases")
+        .append("text")
+      .attr("x", 72)
+      .attr("y",57)
+      .text(value1 == 0 ? "None" : d3.format(",d")(value1))
+      .attr("font-size", "12px")
+
+      valueData =  caseData.filter(p => p.Category=="Cases_prec7")
+        value2 = d3.max(valueData, d=>d.Value)
+             
+      d3.select("#cases")
+        .append("text")
+      .attr("x", 72)
+      .attr("y",97)
+      .text(value2 == 0 ? "None" : d3.format(",d")(value2))
+      .attr("font-size", "12px")
+     
+     
+    //create axes
+      var xAxis = d3.axisBottom()
+        .scale(xScale)
+        .ticks(3)
+
+      d3.select("#cases").append("g")
+        .attr("transform", "translate(50, " + 120  + ")")
+        .call(xAxis)
+
+      // Title for x-axis 
+      d3.select("#cases")
+        .append("text")     
+        .attr("x", 120)
+        .attr("y", 150)
+        .style("text-anchor", "middle")
+        .text("Cases")
+        .attr("font-size", "12px");
+
+      var tickLabels = ['Mar 20','Mar 13']
+
+      var yAxis = d3.axisLeft()
+       .scale(yScale)
+       .tickSizeInner(5)
+       .tickSizeOuter(0)
+       .tickFormat(function(d,i){ return tickLabels[i] });
+
+      d3.select("#cases").append("g")
+        .attr("transform", "translate(50, 20)")
+        .call(yAxis);
+
+ 
+
+    //*********************************************************************************
+    //create 4th quadrant
+      d3.select("#dashboard")
+      .append("g")
+        .attr("transform", "translate(235,290)")
+        .attr("id", "deaths");
+
+     d3.select("#deaths")
+      .append("text")
+        .attr("x", 15)
+        .attr("y",15)
+        .text("Deaths For Week Ending:")
+        .attr("font-size", "20px")
+        .style("text-decoration", "underline") 
+        .attr("font-style", "italic")
+         .attr("font-weight",400)
+         .attr("fill", "blue"); 
+
+    //create chart for deaths only  
+      var deathData = long_data.filter(p => p.Category=="Deaths_last7" || p.Category=="Deaths_prec7");
+   
+      var xMax = d3.max(deathData, d => d.Value);
+      var xScale = d3.scaleLinear().domain([0,xMax]).range([0,150]);
+      var yScale = d3.scaleBand()
+            .domain(deathData.map(function(d) {return d.Category;}))
+          .range([0, 100])
+          .padding(0.25); //spaces between bars
+      
+    //create rectangles
+     d3.select("#deaths")
+        .selectAll("rect")
+        .data(deathData)
+        .enter()
+        .append("rect")
+          .attr("height", 20)
+          .attr("width", d => xScale(d.Value))
+          .attr("y", d=> yScale(d.Category) + 30)
+          .attr("x", 50)
+          .attr("opacity", 0.4)
+          .style("fill", "#ff0000")
+          .style("stroke", "#9A8B7A")
+          .style("stroke-width", "1px");
+
+   
+        valueData =  deathData.filter(p => p.Category=="Deaths_last7")
+        value1 = d3.max(valueData, d=>d.Value)
+              
+        d3.select("#deaths")
+        .append("text")
+          .attr("x", 72)
+          .attr("y",57)
+          .text(value1 == 0 ? "None" : d3.format(",d")(value1))
+          .attr("font-size", "12px")
+
+        valueData =  deathData.filter(p => p.Category=="Deaths_prec7")
+        value2 = d3.max(valueData, d=>d.Value)
+
+        d3.select("#deaths")
+         .append("text")
+          .attr("x", 72)
+          .attr("y",97)
+          .text(value2 == 0 ? "None" : d3.format(",d")(value2))
+          .attr("font-size", "12px")
+     
+      //create axes
+      var xAxis = d3.axisBottom()
+        .scale(xScale)
+        .ticks(3)
+
+      d3.select("#deaths").append("g")
+          .attr("transform", "translate(50, " + 120  + ")")
+          .call(xAxis)
+
+      // Title for x-axis 
+      d3.select("#deaths")
+        .append("text")     
+        .attr("x", 120)
+        .attr("y", 150)
+        .style("text-anchor", "middle")
+        .text("Deaths")
+        .attr("font-size", "12px");
+
+      var tickLabels = ['Mar 20','Mar 13']
+
+      var yAxis = d3.axisLeft()
+        .scale(yScale)
+        .tickSizeInner(5)
+        .tickSizeOuter(0)
+        .tickFormat(function(d,i){ return tickLabels[i] });
+      
+      d3.select("#deaths").append("g")
+        .attr("transform", "translate(50, 25)")
+      .call(yAxis);
+
+  //*****************************************************************************************
+
+              
+}
+
+
+
+
+            
+        </script>
+    </body>
+</html>
